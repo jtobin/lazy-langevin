@@ -1,7 +1,7 @@
 {-# OPTIONS_GHC -Wall #-}
 
 module Numeric.MCMC.Langevin ( 
-          MarkovChain(..), Parameters
+          MarkovChain(..), Parameters(..)
         , runChain 
         ) where
 
