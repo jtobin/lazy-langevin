@@ -1,2 +1,4 @@
 working
-
+*swp
+.git
+.DS_Store

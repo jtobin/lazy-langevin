@@ -27,6 +27,8 @@ data Parameters = Parameters { _target  :: [Double] -> Double
                              , _gTarget :: [Double] -> [Double]
                              , _eps     :: {-# UNPACK #-} !Double }
 
+type ViewsParameters = ReaderT Parameters
+
 -- | Display the current state. 
 instance Show MarkovChain where
     show config = filter (`notElem` "[]") $ show (theta config)
@@ -43,15 +45,14 @@ localMean :: [Double]                   -- Current state
           -> Double                     -- Step size
           -> ([Double] -> [Double])     -- Gradient
           -> [Double]                   -- Localized mean 
-localMean t e gTarget = 
-  zipWith (+) t (map (* (0.5 * e^(2 :: Int))) (gTarget t))
+localMean t e gTarget = zipWith (+) t (map (* (0.5 * e^(2 :: Int))) (gTarget t))
 {-# INLINE localMean #-}
 
 -- | Perturb the state, creating a new proposal.
 perturb :: PrimMonad m 
         => [Double]                      -- Current state
         -> Gen (PrimState m)             -- MWC PRNG
-        -> ReaderT Parameters m [Double] -- Resulting perturbation, wrapped in ReaderT m.
+        -> ViewsParameters m [Double]    -- Resulting perturbation.
 perturb t g = do
     Parameters _ gTarget eps <- ask
     zs <- replicateM (length t) (lift $ standard g)
@@ -65,7 +66,7 @@ perturb t g = do
 metropolisStep :: PrimMonad m 
                => MarkovChain                       -- Current state
                -> Gen (PrimState m)                 -- MWC PRNG 
-               -> ReaderT Parameters m MarkovChain  -- New state, wrapped in ReaderT m.
+               -> ViewsParameters m MarkovChain     -- New state.
 metropolisStep state g = do
     Parameters target gTarget eps <- ask
     let (t0, nacc) = (theta &&& accepts) state
