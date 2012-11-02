@@ -1,7 +1,9 @@
 {-# OPTIONS_GHC -Wall #-}
 
-module Langevin ( MarkovChain(..), Parameters
-                , runChain                    ) where
+module Numeric.MCMC.Langevin ( 
+          MarkovChain(..), Parameters
+        , runChain 
+        ) where
 
 import Control.Monad
 import Control.Monad.Trans
