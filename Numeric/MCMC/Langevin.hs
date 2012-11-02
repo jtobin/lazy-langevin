@@ -21,9 +21,9 @@ data MarkovChain = Config { theta   :: [Double]
 
 -- | Parameters for the chain.  The target (expected to be a log density), its 
 --   gradient, and a step size tuning parameter.
-data Parameters = Parameters { _target     :: [Double] -> Double
+data Parameters = Parameters { _target  :: [Double] -> Double
                              , _gTarget :: [Double] -> [Double]
-                             , _eps        :: {-# UNPACK #-} !Double }
+                             , _eps     :: {-# UNPACK #-} !Double }
 
 -- | Display the current state. 
 instance Show MarkovChain where
@@ -47,9 +47,9 @@ localMean t e gTarget =
 
 -- | Perturb the state, creating a new proposal.
 perturb :: PrimMonad m 
-        => [Double] 
-        -> Gen (PrimState m) 
-        -> ReaderT Parameters m [Double]
+        => [Double]                      -- Current state
+        -> Gen (PrimState m)             -- MWC PRNG
+        -> ReaderT Parameters m [Double] -- Resulting perturbation, wrapped in ReaderT m.
 perturb t g = do
     Parameters _ gTarget eps <- ask
     zs <- replicateM (length t) (lift $ standard g)
@@ -61,9 +61,9 @@ perturb t g = do
 
 -- | Perform a metropolis accept/reject step.
 metropolisStep :: PrimMonad m 
-               => MarkovChain 
-               -> Gen (PrimState m) 
-               -> ReaderT Parameters m MarkovChain
+               => MarkovChain                       -- Current state
+               -> Gen (PrimState m)                 -- MWC PRNG 
+               -> ReaderT Parameters m MarkovChain  -- New state, wrapped in ReaderT m.
 metropolisStep state g = do
     Parameters target gTarget eps <- ask
     let (t0, nacc) = (theta &&& accepts) state
@@ -83,7 +83,11 @@ metropolisStep state g = do
 {-# INLINE metropolisStep #-}
 
 -- | Diffuse through states.
-runChain :: Parameters -> Int -> MarkovChain -> Gen RealWorld -> IO MarkovChain
+runChain :: Parameters      -- Parameters of the Markov chain.
+         -> Int             -- Number of epochs to iterate the chain.
+         -> MarkovChain     -- Initial state of the Markov chain.
+         -> Gen RealWorld   -- MWC PRNG
+         -> IO MarkovChain  -- End state of the Markov chain, wrapped in IO.
 runChain params nepochs initConfig g 
     | nepochs == 0 = return initConfig
     | otherwise    = do
