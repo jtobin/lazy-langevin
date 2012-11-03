@@ -1,9 +1,9 @@
-{-# OPTIONS_GHC -Wall #-}
+-- {-# OPTIONS_GHC -Wall #-}
 
 module Numeric.MCMC.RiemannianLangevin (
             MarkovChain(..)
           , Parameters, createParameters
-          , runChain
+          , runChain, testPerturb
           ) where
 
 import Numeric.MCMC.Langevin hiding (Parameters, runChain)
@@ -22,7 +22,7 @@ data Parameters = Parameters {
     _target              :: [Double] -> Double        -- Target (log density)
   , _curvatureXgradient  :: [Double] -> [Double]      -- Curvature right-multiplied by gradient
   , _invFisherMetric     :: [Double] -> Matrix Double -- Inverse Fisher metric tensor
-  , _sqrtInvFisherMetric :: [Double] -> Matrix Double -- Cholesky component of tensor
+  , _sqrtInvFisherMetric :: [Double] -> Matrix Double -- Square root of the tensor
   , _eps                 :: {-# UNPACK #-} !Double    -- Step size
   }
 
@@ -39,8 +39,9 @@ createParameters t g h =
   where curvatureXgradient xs = 
             let mat = invFisherMetric xs <> fromColumns [fromList (g xs)]
             in  concat . toLists . trans $ mat
-        invFisherMetric     = inv . fromRows . map (fromList . map (* (-1))) . h
-        sqrtInvFisherMetric = trans . chol . invFisherMetric
+        invFisherMetric       = pinv . fromRows . map (fromList . map (* (-1))) . h -- FIXME bugs possibly arriving from numerical instability
+        sqrtInvFisherMetric x = let z = schur (invFisherMetric x) 
+                                in  fst z <> sqrtm (snd z) <> trans (fst z)
 {-# INLINE createParameters #-}
 
 -- | Non-isotropic Gaussian density.
@@ -111,4 +112,18 @@ runChain params nepochs initConfig g
         result <- runReaderT (metropolisStep initConfig g) params
         print result
         runChain params (nepochs - 1) result g
+
+
+
+-- | How's the perturbation doing?
+testPerturb t g h e = do
+    gen <- create
+    let params = createParameters t g h e
+    forM_ [1..1000] $ const $ do
+        p <- runReaderT (perturb [1.0, 1.0] gen) params
+        putStrLn $ filter (`notElem` "[]") (show p)
+    return ()
+        
+        
+
 
