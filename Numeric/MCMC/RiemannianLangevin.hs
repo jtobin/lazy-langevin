@@ -31,6 +31,7 @@ data Parameters = Parameters {
 type ViewsParameters = ReaderT Parameters
 
 -- | Construct Parameters (data constructor not exported).
+-- FIXME sqrtm is not converging; alternatives?
 createParameters :: ([Double] -> Double)     -- Target (log density)
                  -> ([Double] -> [Double])   -- Gradient
                  -> ([Double] -> [[Double]]) -- Hessian
@@ -41,7 +42,7 @@ createParameters t g h =
   where curvatureXgradient xs = 
             let mat = invFisherMetric xs <> fromColumns [fromList (g xs)]
             in  concat . toLists . trans $ mat
-        invFisherMetric       = pinv . fromRows . map (fromList . map (* (-1))) . h -- FIXME bugs possibly arriving from numerical instability
+        invFisherMetric       = pinv . fromRows . map (fromList . map (* (-1))) . h 
         sqrtInvFisherMetric x = let z = schur (invFisherMetric x) 
                                 in  fst z <> sqrtm (snd z) <> trans (fst z)
 {-# INLINE createParameters #-}
