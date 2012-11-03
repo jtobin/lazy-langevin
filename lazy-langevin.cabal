@@ -16,6 +16,6 @@ build-type:          Simple
 cabal-version:       >=1.8
 
 library
-  exposed-modules:     Numeric.MCMC.Langevin
+  exposed-modules:     Numeric.MCMC.Langevin, Numeric.MCMC.RiemannianLangevin
   -- other-modules:       
-  build-depends:       base ==4.5.*, mtl ==2.1.*, primitive ==0.4.*, mwc-random ==0.12.*, statistics ==0.10.*
+  build-depends:       base ==4.5.*, mtl ==2.1.*, primitive ==0.4.*, mwc-random ==0.12.*, statistics ==0.10.*, hmatrix ==0.14.1.*

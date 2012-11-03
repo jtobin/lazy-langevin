@@ -4,3 +4,4 @@ working
 .DS_Store
 dist
 Setup.hs
+*trace*

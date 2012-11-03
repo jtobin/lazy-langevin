@@ -9,14 +9,14 @@ import Control.Monad
 import Control.Monad.Trans
 import Control.Monad.Reader
 import Control.Monad.Primitive
-import Control.Arrow hiding (left)
+import Control.Arrow 
 import System.Random.MWC
 import System.Random.MWC.Distributions
 import Data.List
 import Statistics.Distribution
 import Statistics.Distribution.Normal hiding (standard)
 
--- | State of the Markov Chain.  Current parameter values are held in 'theta', 
+-- | State of the Markov chain.  Current parameter values are held in 'theta', 
 --   while accepts counts the number of proposals accepted.
 data MarkovChain = Config { theta   :: [Double] 
                           , accepts :: {-# UNPACK #-} !Int }
@@ -27,6 +27,7 @@ data Parameters = Parameters { _target  :: [Double] -> Double
                              , _gTarget :: [Double] -> [Double]
                              , _eps     :: {-# UNPACK #-} !Double }
 
+-- | Reader view of chain parameters.
 type ViewsParameters = ReaderT Parameters
 
 -- | Display the current state. 
@@ -62,11 +63,11 @@ perturb t g = do
     return $! perturbedState 
 {-# INLINE perturb #-}
 
--- | Perform a metropolis accept/reject step.
+-- | Perform a Metropolis accept/reject step.
 metropolisStep :: PrimMonad m 
                => MarkovChain                       -- Current state
                -> Gen (PrimState m)                 -- MWC PRNG 
-               -> ViewsParameters m MarkovChain     -- New state.
+               -> ViewsParameters m MarkovChain     -- New state
 metropolisStep state g = do
     Parameters target gTarget eps <- ask
     let (t0, nacc) = (theta &&& accepts) state
