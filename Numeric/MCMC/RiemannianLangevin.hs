@@ -3,10 +3,12 @@
 module Numeric.MCMC.RiemannianLangevin (
             MarkovChain(..)
           , Parameters, createParameters
-          , runChain, testPerturb
+          , runChain
+          -- test stuff
+          , testPerturb, localMean, perturb
           ) where
 
-import Numeric.MCMC.Langevin hiding (Parameters, runChain)
+import Numeric.MCMC.Langevin hiding (Parameters, runChain, testPerturb)
 import Numeric.LinearAlgebra  
 import Control.Arrow
 import Control.Monad
@@ -54,11 +56,12 @@ nonIsoGauss xs mu sig = exp val
         (invSig, (ldet, _)) = invlndet sig
 
 -- | Mean function for the discretized Riemannian Langevin diffusion.
-localMean :: [Double]               -- Current state
-          -> ([Double] -> [Double]) -- Curvature * gradient
-          -> Double                 -- Step size
-          -> [Double]               -- Localized mean of proposal distribution
-localMean t c e = zipWith (+) t (map (* (0.5 * e^(2 :: Int))) (c t))
+localMean :: Monad m 
+          => [Double]                   -- Current state
+          -> ViewsParameters m [Double] -- Localized mean of proposal distribution
+localMean t = do
+    Parameters _ c _ _ e <- ask
+    return $! zipWith (+) t (map (* (0.5 * e^(2 :: Int))) (c t))
 {-# INLINE localMean #-}
 
 -- | Perturb the state, creating a new proposal.
@@ -69,10 +72,10 @@ perturb :: PrimMonad m
 perturb t g = do
     Parameters _ c _ s e <- ask
     zs <- replicateM (length t) (lift $ standard g)
+    t0 <- localMean t
     let adjustedBrownianMotion = s t <> fromColumns [fromList zs]
         abmList = concat . toLists . trans $ adjustedBrownianMotion
         perturbedState = zipWith (+) t0 t1 
-        t0 = localMean t c e
         t1 = map (* eps) abmList
     return $! perturbedState 
 {-# INLINE perturb #-}
@@ -85,17 +88,19 @@ metropolisStep :: PrimMonad m
 metropolisStep state g = do
     Parameters target c iF _ e <- ask
     let (t0, nacc) = (theta &&& accepts) state
-    zc       <- lift $ uniformR (0, 1) g
-    proposal <- perturb t0 g
+    zc           <- lift $ uniformR (0, 1) g
+    proposal     <- perturb t0 g
+    t0Mean       <- localMean t0
+    proposalMean <- localMean proposal
     let mc = if   zc < acceptProb 
              then (proposal, 1)
              else (t0,       0)
 
         acceptProb = if isNaN val then 1 else val where val = arRatio 
         
-        arRatio = exp . min 0 $ target proposal - target t0 
-          + log (nonIsoGauss t0 (localMean proposal c e) ((e^(2 :: Int)) `scale` iF proposal))
-          - log (nonIsoGauss proposal (localMean t0 c e) ((e^(2 :: Int)) `scale` iF t0))
+        arRatio = exp . min 0 $ 
+            target proposal + log (nonIsoGauss proposal t0Mean ((e^(2::Int)) `scale` iF t0)) 
+          - target t0       - log (nonIsoGauss t0 proposalMean ((e^(2::Int)) `scale` iF proposal)) 
 
     return $! Config (fst mc) (nacc + snd mc)
 {-# INLINE metropolisStep #-}
@@ -113,14 +118,14 @@ runChain params nepochs initConfig g
         print result
         runChain params (nepochs - 1) result g
 
-
+-- Tests
 
 -- | How's the perturbation doing?
 testPerturb t g h e = do
     gen <- create
     let params = createParameters t g h e
-    forM_ [1..1000] $ const $ do
-        p <- runReaderT (perturb [1.0, 1.0] gen) params
+    forM_ [1..200] $ const $ do
+        p <- runReaderT (perturb [5.0, 40.0] gen) params
         putStrLn $ filter (`notElem` "[]") (show p)
     return ()
         

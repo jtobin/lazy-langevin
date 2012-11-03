@@ -1,8 +1,8 @@
-{-# OPTIONS_GHC -Wall #-}
+-- {-# OPTIONS_GHC -Wall #-}
 
 module Numeric.MCMC.Langevin ( 
           MarkovChain(..), Parameters(..)
-        , runChain 
+        , runChain, testPerturb
         ) where
 
 import Control.Monad
@@ -42,11 +42,12 @@ isoGauss xs mu sig = foldl1' (*) (zipWith density nds xs)
 {-# INLINE isoGauss #-}
 
 -- | Mean function for the discretized Langevin diffusion.
-localMean :: [Double]                   -- Current state
-          -> Double                     -- Step size
-          -> ([Double] -> [Double])     -- Gradient
-          -> [Double]                   -- Localized mean 
-localMean t e gTarget = zipWith (+) t (map (* (0.5 * e^(2 :: Int))) (gTarget t))
+localMean :: Monad m 
+          => [Double]                   -- Current state
+          -> ViewsParameters m [Double] -- Localized mean 
+localMean t = do
+    Parameters _ gTarget e <- ask
+    return $! zipWith (+) t (map (* (0.5 * e^(2 :: Int))) (gTarget t))
 {-# INLINE localMean #-}
 
 -- | Perturb the state, creating a new proposal.
@@ -55,33 +56,35 @@ perturb :: PrimMonad m
         -> Gen (PrimState m)             -- MWC PRNG
         -> ViewsParameters m [Double]    -- Resulting perturbation.
 perturb t g = do
-    Parameters _ gTarget eps <- ask
-    zs <- replicateM (length t) (lift $ standard g)
+    params@(Parameters _ gTarget e) <- ask
+    zs    <- replicateM (length t) (lift $ standard g)
+    t0    <- localMean t
     let perturbedState = zipWith (+) t0 t1 
-        t0 = localMean t eps gTarget
-        t1 = map (* eps) zs
+        t1 = map (* e) zs
     return $! perturbedState 
 {-# INLINE perturb #-}
 
 -- | Perform a Metropolis accept/reject step.
 metropolisStep :: PrimMonad m 
-               => MarkovChain                       -- Current state
-               -> Gen (PrimState m)                 -- MWC PRNG 
-               -> ViewsParameters m MarkovChain     -- New state
+               => MarkovChain                   -- Current state
+               -> Gen (PrimState m)             -- MWC PRNG 
+               -> ViewsParameters m MarkovChain -- New state
 metropolisStep state g = do
-    Parameters target gTarget eps <- ask
+    Parameters target gTarget e <- ask
     let (t0, nacc) = (theta &&& accepts) state
-    zc       <- lift $ uniformR (0, 1) g
-    proposal <- perturb t0 g
+    zc           <- lift $ uniformR (0, 1) g
+    proposal     <- perturb t0 g
+    t0Mean       <- localMean t0
+    proposalMean <- localMean proposal
     let mc = if   zc < acceptProb 
              then (proposal, 1)
              else (t0,       0)
 
-        acceptProb = if isNaN val then 1 else val where val = arRatio 
+        acceptProb = if isNaN val then 0 else val where val = arRatio 
         
-        arRatio = exp . min 0 $ target proposal - target t0
-          + log (isoGauss t0 (localMean proposal eps gTarget) (eps^(2 :: Int)))
-          - log (isoGauss proposal (localMean t0 eps gTarget) (eps^(2 :: Int)))
+        arRatio = exp . min 0 $ 
+            target proposal + log (isoGauss proposal t0Mean (e^(2 :: Int)))
+          - target t0       - log (isoGauss t0 proposalMean (e^(2 :: Int)))
 
     return $! Config (fst mc) (nacc + snd mc)
 {-# INLINE metropolisStep #-}
@@ -98,4 +101,15 @@ runChain params nepochs initConfig g
         result <- runReaderT (metropolisStep initConfig g) params
         print result
         runChain params (nepochs - 1) result g
+
+-- Tests
+
+-- | How's the perturbation doing?
+testPerturb t g e = do
+    gen <- create
+    let params = Parameters t g e
+    forM_ [1..1000] $ const $ do
+        p <- runReaderT (perturb [1.0, 1.0] gen) params
+        putStrLn $ filter (`notElem` "[]") (show p)
+    return ()
 
