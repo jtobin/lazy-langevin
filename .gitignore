@@ -5,4 +5,5 @@ working
 dist
 Setup.hs
 *trace*
-Numeric/MCMC/Examples
+demos
+output
