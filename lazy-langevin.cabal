@@ -14,8 +14,16 @@ maintainer:          jared@jtobin.ca
 category:            Numeric
 build-type:          Simple
 cabal-version:       >=1.8
+Description:
+
+    Sampling via gradient-based diffusion.
+
+Source-repository head
+  Type:     git
+  Location: http://github.com/jtobin/lazy-langevin.git
 
 library
   exposed-modules:     Numeric.MCMC.Langevin, Numeric.MCMC.RiemannianLangevin
   -- other-modules:       
   build-depends:       base ==4.*, mtl ==2.1.*, primitive ==0.4.*, mwc-random ==0.12.*, statistics ==0.10.*, hmatrix ==0.14.1.*
+  ghc-options:         -Wall
