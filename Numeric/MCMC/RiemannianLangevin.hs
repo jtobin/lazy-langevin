@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -Wall #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Numeric.MCMC.RiemannianLangevin (
             MarkovChain(..)
@@ -54,6 +55,7 @@ nonIsoGauss xs mu sig = exp val
         (xsM, muM) = (\f (a, b) -> (f a, f b)) (\l -> fromColumns [fromList l]) (xs, mu)
         p                   = fromIntegral $ cols sig
         (invSig, (ldet, _)) = invlndet sig
+{-# INLINE nonIsoGauss #-}
 
 -- | Mean function for the discretized Riemannian Langevin diffusion.
 localMean :: Monad m 
@@ -108,24 +110,18 @@ metropolisStep state g = do
 -- | Diffuse through states.
 runChain :: Options         -- Options of the Markov chain.
          -> Int             -- Number of epochs to iterate the chain.
+         -> Int             -- Print every nth iteration
          -> MarkovChain     -- Initial state of the Markov chain.
          -> Gen RealWorld   -- MWC PRNG
          -> IO MarkovChain  -- End state of the Markov chain, wrapped in IO.
-runChain params nepochs initConfig g 
-    | nepochs == 0 = return initConfig
-    | otherwise    = do
-        result <- runReaderT (metropolisStep initConfig g) params
-        print result
-        runChain params (nepochs - 1) result g
-
--- Tests
-
--- | How's the perturbation doing?
--- testPerturb t g h e = do
---     gen <- create
---     let params = createOptions t g h e
---     forM_ [1..200] $ const $ do
---         p <- runReaderT (perturb [5.0, 40.0] gen) params
---         putStrLn $ filter (`notElem` "[]") (show p)
---     return ()
+runChain = go
+  where go o n t !c g | n == 0 = return c
+                      | n `rem` t /= 0 = do
+                            r <- runReaderT (metropolisStep c g) o
+                            go o (n - 1) t r g
+                      | otherwise = do
+                            r <- runReaderT (metropolisStep c g) o
+                            print r
+                            go o (n - 1) t r g
+{-# INLINE runChain #-}
 

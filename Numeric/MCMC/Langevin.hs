@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -Wall #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Numeric.MCMC.Langevin ( 
           MarkovChain(..), Options(..)
@@ -92,13 +93,18 @@ metropolisStep state g = do
 -- | Diffuse through states.
 runChain :: Options         -- Options of the Markov chain.
          -> Int             -- Number of epochs to iterate the chain.
+         -> Int             -- Print every nth iteration
          -> MarkovChain     -- Initial state of the Markov chain.
          -> Gen RealWorld   -- MWC PRNG
          -> IO MarkovChain  -- End state of the Markov chain, wrapped in IO.
-runChain params nepochs initConfig g 
-    | nepochs == 0 = return initConfig
-    | otherwise    = do
-        result <- runReaderT (metropolisStep initConfig g) params
-        print result
-        runChain params (nepochs - 1) result g
+runChain = go
+  where go o n t !c g | n == 0 = return c
+                      | n `rem` t /= 0 = do
+                            r <- runReaderT (metropolisStep c g) o
+                            go o (n - 1) t r g
+                      | otherwise = do
+                            r <- runReaderT (metropolisStep c g) o
+                            print r
+                            go o (n - 1) t r g
+{-# INLINE runChain #-}
 
