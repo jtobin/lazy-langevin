@@ -1,111 +1,145 @@
 {-# OPTIONS_GHC -Wall #-}
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeFamilies #-}
 
-module Numeric.MCMC.Langevin ( 
-          MarkovChain(..), Options(..)
-        , runChain
-        ) where
+module Numeric.MCMC.Langevin where
 
-import Control.Monad
-import Control.Monad.Trans
-import Control.Monad.Reader
-import Control.Monad.Primitive
-import Control.Arrow 
-import System.Random.MWC
-import System.Random.MWC.Distributions
-import Data.List
-import Statistics.Distribution
-import Statistics.Distribution.Normal hiding (standard)
-import GHC.Float
+import Control.Lens
+import Control.Monad (when)
+import Control.Monad.Primitive (PrimMonad, PrimState, RealWorld)
+import Control.Monad.Trans.State.Strict (get, put, execStateT)
+import qualified Data.Foldable as Foldable (foldl1)
+import Data.Maybe (fromMaybe)
+import Data.Sampling.Types
+import Data.Traversable (for)
+import Pipes hiding (for, next)
+import qualified Pipes.Prelude as Pipes
+import System.Random.MWC.Probability (Prob, Gen)
+import qualified System.Random.MWC.Probability as MWC
 
--- | State of the Markov chain.  Current parameter values are held in 'theta', 
---   while accepts counts the number of proposals accepted.
-data MarkovChain = MarkovChain { theta   :: [Double] 
-                               , accepts :: {-# UNPACK #-} !Int }
+-- | Trace 'n' iterations of a Markov chain and stream them to stdout.
+--
+-- >>> withSystemRandom . asGenIO $ mcmc 3 1 [0, 0] target
+mcmc
+  :: (Num (IxValue (t Double)), Show (t Double), Traversable t
+     , FunctorWithIndex (Index (t Double)) t, Ixed (t Double)
+     , IxValue (t Double) ~ Double)
+  => Int
+  -> Double
+  -> t Double
+  -> Target (t Double)
+  -> Gen RealWorld
+  -> IO ()
+mcmc n step chainPosition chainTarget gen = runEffect $
+        chain step Chain {..} gen
+    >-> Pipes.take n
+    >-> Pipes.mapM_ print
+  where
+    chainScore    = lTarget chainTarget chainPosition
+    chainTunables = Nothing
 
--- | Options for the chain.  The target (expected to be a log density), its 
---   gradient, and a step size tuning parameter.
-data Options = Options { _target  :: [Double] -> Double
-                       , _gTarget :: [Double] -> [Double]
-                       , _eps     :: {-# UNPACK #-} !Double }
-
--- | A result with this type has a view of the chain options.
-type ViewsOptions = ReaderT Options
-
--- | Display the current state. 
-instance Show MarkovChain where
-    show config = filter (`notElem` "[]") $ show (map double2Float (theta config))
-
--- | Density function for an isotropic Gaussian.  The (identity) covariance 
---   matrix is multiplied by the scalar 'sig'.
-isoGauss :: [Double] -> [Double] -> Double -> Double
-isoGauss xs mu sig = foldl1' (*) (zipWith density nds xs)
-    where nds = map (`normalDistr` sig) mu
-{-# INLINE isoGauss #-}
+-- A Markov chain driven by the Metropolis transition operator.
+chain
+  :: (Num (IxValue (t Double)), Traversable t
+     , FunctorWithIndex (Index (t Double)) t, Ixed (t Double)
+     , PrimMonad m, IxValue (t Double) ~ Double)
+  => Double
+  -> Chain (t Double) b
+  -> Gen (PrimState m)
+  -> Producer (Chain (t Double) b) m ()
+chain step = loop where
+  loop state prng = do
+    next <- lift (MWC.sample (execStateT (langevin step) state) prng)
+    yield next
+    loop next prng
 
 -- | Mean function for the discretized Langevin diffusion.
-localMean :: Monad m 
-          => [Double]                -- Current state
-          -> ViewsOptions m [Double] -- Localized mean 
-localMean t = do
-    Options _ gTarget e <- ask
-    return $! zipWith (+) t (map (* (0.5 * e^(2 :: Int))) (gTarget t))
-{-# INLINE localMean #-}
+localMean
+  :: (Fractional b, Ixed (f b), FunctorWithIndex (Index (f b)) f
+     , IxValue (f b) ~ b)
+  => Target (f b)
+  -> b
+  -> f b
+  -> f b
+localMean target e q = gzipWith (+) q scaled where
+  scale  = (* (0.5 * e ^ (2 :: Int)))
+  scaled = fmap scale (g q)
+  g      = fromMaybe err (glTarget target)
+  err    = error "adjustMomentum: no gradient provided"
 
--- | Perturb the state, creating a new proposal.
-perturb :: PrimMonad m 
-        => [Double]                   -- Current state
-        -> Gen (PrimState m)          -- MWC PRNG
-        -> ViewsOptions m [Double]    -- Resulting perturbation.
-perturb t g = do
-    Options _ _ e <- ask
-    zs    <- replicateM (length t) (lift $ standard g)
-    t0    <- localMean t
-    let perturbedState = zipWith (+) t0 t1 
-        t1 = map (* e) zs
-    return $! perturbedState 
-{-# INLINE perturb #-}
+perturb
+  :: (Traversable f, PrimMonad m, Ixed (f Double)
+     , FunctorWithIndex (Index (f Double)) f
+     , IxValue (f Double) ~ Double)
+  => Target (f Double)
+  -> Double
+  -> f Double
+  -> Prob m (f Double)
+perturb target e q = do
+  zs  <- for q (const MWC.standard)
+  let q0 = localMean target e q -- FIXME is there an error here?  looks dubious
+      q1 = fmap (* e) zs
+  return (gzipWith (+) q0 q1)
 
--- | Perform a Metropolis accept/reject step.
-metropolisStep :: PrimMonad m 
-               => MarkovChain                -- Current state
-               -> Gen (PrimState m)          -- MWC PRNG 
-               -> ViewsOptions m MarkovChain -- New state
-metropolisStep state g = do
-    Options target _ e <- ask
-    let (t0, nacc) = (theta &&& accepts) state
-    zc           <- lift $ uniformR (0, 1) g
-    proposal     <- perturb t0 g
-    t0Mean       <- localMean t0
-    proposalMean <- localMean proposal
-    let mc = if   zc < acceptProb 
-             then (proposal, 1)
-             else (t0,       0)
+langevin
+  :: (Floating (IxValue (t1 Double)), Ord (IxValue (t1 Double))
+     , Traversable t1, PrimMonad m, Ixed (t1 Double)
+     , FunctorWithIndex (Index (t1 Double)) t1
+     , IxValue (t1 Double) ~ Double)
+  => Double
+  -> Transition m (Chain (t1 Double) b)
+langevin e = do
+  Chain {..} <- get
+  proposal <- lift (perturb chainTarget e chainPosition)
+  let currentMean   = localMean chainTarget e chainPosition
+      proposalMean  = localMean chainTarget e proposal
+      proposalScore = exp $ auxilliaryTarget chainTarget e
+        (chainPosition, currentMean)
+        (proposal, proposalMean)
 
-        acceptProb = if isNaN val then 0 else val where val = arRatio 
-        
-        arRatio = exp . min 0 $ 
-            target proposal + log (isoGauss proposal t0Mean (e^(2 :: Int)))
-          - target t0       - log (isoGauss t0 proposalMean (e^(2 :: Int)))
+      acceptProbability = whenNaN 0 proposalScore
 
-    return $! MarkovChain (fst mc) (nacc + snd mc)
-{-# INLINE metropolisStep #-}
+  accept <- lift (MWC.bernoulli acceptProbability)
+  when accept (put (Chain chainTarget proposalScore proposal chainTunables))
 
--- | Diffuse through states.
-runChain :: Options         -- Options of the Markov chain.
-         -> Int             -- Number of epochs to iterate the chain.
-         -> Int             -- Print every nth iteration
-         -> MarkovChain     -- Initial state of the Markov chain.
-         -> Gen RealWorld   -- MWC PRNG
-         -> IO MarkovChain  -- End state of the Markov chain, wrapped in IO.
-runChain = go
-  where go o n t !c g | n == 0 = return c
-                      | n `rem` t /= 0 = do
-                            r <- runReaderT (metropolisStep c g) o
-                            go o (n - 1) t r g
-                      | otherwise = do
-                            r <- runReaderT (metropolisStep c g) o
-                            print r
-                            go o (n - 1) t r g
-{-# INLINE runChain #-}
+whenNaN :: RealFloat a => a -> a -> a
+whenNaN val x
+  | isNaN x   = val
+  | otherwise = x
+
+auxilliaryTarget
+  :: (Floating (IxValue s), Ord (IxValue s), Foldable t, Foldable t1
+     , Ixed s, FunctorWithIndex (Index s) t
+     , FunctorWithIndex (Index s) t1, IxValue s ~ Double)
+  => Target s
+  -> IxValue s
+  -> (s, t (IxValue s))
+  -> (s, t1 (IxValue s))
+  -> Double
+auxilliaryTarget target e (q0, qm0) (q1, qm1) = min 0 $
+    lTarget target q1 + log (isoGauss q1 qm0 (e ^ (2 :: Int)))
+  - lTarget target q0 - log (isoGauss q0 qm1 (e ^ (2 :: Int)))
+
+-- A container-generic zipwith.
+gzipWith
+  :: (FunctorWithIndex (Index s) f, Ixed s)
+  => (a -> IxValue s -> b) -> f a -> s -> f b
+gzipWith f xs ys = imap (\j x -> f x (fromMaybe err (ys ^? ix j))) xs where
+  err = error "gzipWith: invalid index"
+
+isoGauss
+  :: (Floating (IxValue s), Ord (IxValue s), Foldable t, Ixed s
+     , FunctorWithIndex (Index s) t)
+  => s
+  -> t (IxValue s)
+  -> IxValue s
+  -> IxValue s
+isoGauss xs mu sig = exp (Foldable.foldl1 (+) (gzipWith density mu xs)) where
+  density m x = log (densityNormal m sig x)
+  densityNormal m s x
+    | s < 0     = 0
+    | otherwise =
+          recip (sqrt (2 * pi) * s)
+        * exp (negate (x - m) ^ (2 :: Int) / (2 * s ^ (2 :: Int)))
 
